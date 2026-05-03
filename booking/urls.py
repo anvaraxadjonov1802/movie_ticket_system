@@ -1,5 +1,6 @@
 from django.urls import path
 from .views import (
+    LoginView,
     MovieListView,
     MovieDetailView,
     CinemaListView,
@@ -14,6 +15,8 @@ from .views import (
 
 
 urlpatterns = [
+    path("auth/login/", LoginView.as_view(), name="login"),
+    
     path("movies/", MovieListView.as_view(), name="movie-list"),
     path("movies/<int:movie_id>/", MovieDetailView.as_view(), name="movie-detail"),
 

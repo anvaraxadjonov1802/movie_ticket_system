@@ -3,6 +3,8 @@ from datetime import timedelta
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
+from django.contrib.auth.hashers import make_password
+
 from booking.models import (
     User,
     Movie,
@@ -19,20 +21,20 @@ class Command(BaseCommand):
     def handle(self, *args, **kwargs):
         self.stdout.write(self.style.WARNING("Creating seed data..."))
 
-        customer, _ = User.objects.get_or_create(
+        customer, _ = User.objects.update_or_create(
             email="customer@example.com",
             defaults={
                 "full_name": "Test Customer",
-                "password": "12345",
+                "password": make_password("12345"),
                 "role": User.Role.CUSTOMER,
             },
         )
 
-        admin_user, _ = User.objects.get_or_create(
+        admin_user, _ = User.objects.update_or_create(
             email="admin@example.com",
             defaults={
                 "full_name": "Test Admin",
-                "password": "12345",
+                "password": make_password("12345"),
                 "role": User.Role.ADMIN,
             },
         )

@@ -4,6 +4,8 @@ from django.shortcuts import get_object_or_404
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status as drf_status
+from django.contrib.auth.hashers import check_password
+from drf_spectacular.utils import extend_schema
 
 from .models import (
     User,
@@ -15,8 +17,12 @@ from .models import (
     BookingSeat,
     Payment,
     Ticket,
+    
 )
 from .serializers import (
+    UserSerializer,
+    LoginSerializer,
+    SeatAvailabilitySerializer,
     MovieSerializer,
     CinemaSerializer,
     SeatSerializer,
@@ -59,29 +65,61 @@ class ShowTimeByMovieView(APIView):
 
 class ShowTimeSeatAvailabilityView(APIView):
     def get(self, request, showtime_id):
-        showtime = get_object_or_404(ShowTime, id=showtime_id)
+        showtime = get_object_or_404(
+            ShowTime.objects.select_related("hall"),
+            id=showtime_id
+        )
 
-        seats = Seat.objects.filter(hall=showtime.hall)
+        seats = Seat.objects.filter(hall=showtime.hall).order_by(
+            "row_number",
+            "seat_number"
+        )
 
-        booked_seat_ids = BookingSeat.objects.filter(
+        booked_records = BookingSeat.objects.select_related(
+            "booking",
+            "seat"
+        ).filter(
             booking__show_time=showtime,
             booking__status__in=[
                 Booking.BookingStatus.PENDING,
                 Booking.BookingStatus.CONFIRMED,
             ],
-        ).values_list("seat_id", flat=True)
+        )
+
+        seat_status_map = {}
+
+        for record in booked_records:
+            if record.booking.status == Booking.BookingStatus.PENDING:
+                seat_status_map[record.seat_id] = "RESERVED"
+            elif record.booking.status == Booking.BookingStatus.CONFIRMED:
+                seat_status_map[record.seat_id] = "BOOKED"
 
         result = []
 
         for seat in seats:
-            seat_data = SeatSerializer(seat).data
-            seat_data["isAvailable"] = seat.id not in booked_seat_ids
-            result.append(seat_data)
+            current_status = seat_status_map.get(seat.id, "AVAILABLE")
 
-        return Response(result)
+            result.append({
+                "id": seat.id,
+                "hall": seat.hall_id,
+                "row_number": seat.row_number,
+                "seat_number": seat.seat_number,
+                "seat_type": seat.seat_type,
+                "seat_label": f"{seat.row_number}{seat.seat_number}",
+                "isAvailable": current_status == "AVAILABLE",
+                "status": current_status,
+            })
 
+        serializer = SeatAvailabilitySerializer(result, many=True)
+        return Response(serializer.data)
+    
 
 class CreateBookingView(APIView):
+
+    @extend_schema(
+        request=CreateBookingSerializer,
+        responses={201: BookingSerializer}
+    )
     def post(self, request):
         serializer = CreateBookingSerializer(data=request.data)
 
@@ -102,21 +140,26 @@ class CreateBookingView(APIView):
             )
 
         user = get_object_or_404(User, id=user_id)
-        showtime = get_object_or_404(ShowTime, id=showtime_id)
-
-        seats = Seat.objects.filter(
-            id__in=seat_ids,
-            hall=showtime.hall
+        showtime = get_object_or_404(
+            ShowTime.objects.select_related("hall"),
+            id=showtime_id
         )
 
-        if seats.count() != len(seat_ids):
-            return Response(
-                {"message": "Some seats are invalid for this hall."},
-                status=drf_status.HTTP_400_BAD_REQUEST
-            )
-
         with transaction.atomic():
-            already_booked = BookingSeat.objects.select_for_update().filter(
+            seats = Seat.objects.select_for_update().filter(
+                id__in=seat_ids,
+                hall=showtime.hall
+            ).order_by("id")
+
+            if seats.count() != len(seat_ids):
+                return Response(
+                    {"message": "Some seats are invalid for this hall."},
+                    status=drf_status.HTTP_400_BAD_REQUEST
+                )
+
+            already_booked = BookingSeat.objects.select_related(
+                "booking"
+            ).filter(
                 booking__show_time=showtime,
                 seat_id__in=seat_ids,
                 booking__status__in=[
@@ -127,7 +170,7 @@ class CreateBookingView(APIView):
 
             if already_booked.exists():
                 return Response(
-                    {"message": "Some selected seats are already booked."},
+                    {"message": "Some selected seats are already reserved or booked."},
                     status=drf_status.HTTP_400_BAD_REQUEST
                 )
 
@@ -151,12 +194,22 @@ class CreateBookingView(APIView):
 
             BookingSeat.objects.bulk_create(booking_seats)
 
+        booking = Booking.objects.prefetch_related(
+            "booking_seats",
+            "tickets"
+        ).select_related(
+            "user",
+            "show_time",
+            "show_time__movie",
+            "show_time__cinema",
+            "show_time__hall",
+        ).get(id=booking.id)
+
         response_serializer = BookingSerializer(booking)
         return Response(
             response_serializer.data,
             status=drf_status.HTTP_201_CREATED
         )
-
 
 class BookingDetailView(APIView):
     def get(self, request, booking_id):
@@ -173,6 +226,11 @@ class UserBookingsView(APIView):
 
 
 class CreatePaymentView(APIView):
+
+    @extend_schema(
+        request=CreatePaymentSerializer,
+        responses={200: PaymentSerializer}
+    )
     def post(self, request):
         serializer = CreatePaymentSerializer(data=request.data)
 
@@ -248,3 +306,41 @@ class BookingTicketsView(APIView):
         tickets = Ticket.objects.filter(booking=booking)
         serializer = TicketSerializer(tickets, many=True)
         return Response(serializer.data)
+
+
+class LoginView(APIView):
+
+    @extend_schema(
+        request=LoginSerializer,
+        responses={200: UserSerializer}
+    )
+    def post(self, request):
+        serializer = LoginSerializer(data=request.data)
+
+        if not serializer.is_valid():
+            return Response(
+                serializer.errors,
+                status=drf_status.HTTP_400_BAD_REQUEST
+            )
+
+        email = serializer.validated_data["email"]
+        password = serializer.validated_data["password"]
+
+        try:
+            user = User.objects.get(email=email)
+        except User.DoesNotExist:
+            return Response(
+                {"message": "Invalid email or password."},
+                status=drf_status.HTTP_401_UNAUTHORIZED
+            )
+
+        if not check_password(password, user.password):
+            return Response(
+                {"message": "Invalid email or password."},
+                status=drf_status.HTTP_401_UNAUTHORIZED
+            )
+
+        return Response({
+            "message": "Login successful.",
+            "user": UserSerializer(user).data
+        })

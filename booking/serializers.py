@@ -12,6 +12,21 @@ from .models import (
     Ticket,
 )
 
+class LoginSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    password = serializers.CharField(write_only=True)
+
+
+class SeatAvailabilitySerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    hall = serializers.IntegerField()
+    row_number = serializers.CharField()
+    seat_number = serializers.IntegerField()
+    seat_type = serializers.CharField()
+    seat_label = serializers.CharField()
+    isAvailable = serializers.BooleanField()
+    status = serializers.CharField()
+    
 
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
