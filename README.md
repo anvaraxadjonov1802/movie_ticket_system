@@ -345,12 +345,12 @@ assets/booking-flow.png
 
 README ichida chiqarish:
 
-```markdown
+
 ![Swagger](assets/swagger.png)
 ![Class Diagram](assets/class-diagram.png)
 ![System Design](assets/system-design.png)
 ![Booking Flow](assets/booking-flow.png)
-```
+
 
 ---
 
